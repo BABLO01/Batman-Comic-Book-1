@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Batman Comic Reader - Muhammad Usman</title>
+    <style>
+        body {
+            background-color: #1a1a1a;
+            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+        #controls {
+            background: #333;
+            width: 100%;
+            padding: 10px;
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            align-items: center;
+            z-index: 100;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+        }
+        .btn {
+            background: #e6b800;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            color: black;
+            transition: background 0.3s;
+        }
+        .btn:hover { background: #ffcc00; }
+        .btn:disabled { background: #666; cursor: not-allowed; }
+        
+        #viewer {
+            flex-grow: 1;
+            width: 100%;
+            overflow: auto;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            padding: 20px;
+            position: relative;
+        }
+        #comic-img {
+            max-width: 100%;
+            height: auto;
+            box-shadow: 0 0 20px rgba(0,0,0,0.8);
+            transition: transform 0.2s ease-in-out;
+            transform-origin: top center;
+        }
+        #page-info { font-size: 1.1em; font-weight: bold; }
+        
+        .tts-controls {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            border-left: 1px solid #555;
+            padding-left: 15px;
+        }
+        
+        #speed-control { width: 60px; }
+        
+        /* Modal for TTS Text */
+        #text-overlay {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0,0,0,0.8);
+            padding: 10px 20px;
+            border-radius: 20px;
+            display: none;
+            max-width: 80%;
+            text-align: center;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+
+<div id="controls">
+    <button class="btn" id="prev-btn" onclick="changePage(-1)">Previous</button>
+    <div id="page-info">Page 1 / <span id="total-pages"></span></div>
+    <button class="btn" id="next-btn" onclick="changePage(1)">Next</button>
+    
+    <button class="btn" onclick="zoom(0.1)">Zoom +</button>
+    <button class="btn" onclick="zoom(-0.1)">Zoom -</button>
+    <button class="btn" onclick="resetZoom()">Reset</button>
+
+    <div class="tts-controls">
+        <button class="btn" id="tts-btn" onclick="toggleTTS()">🔊 Read Aloud</button>
+        <label for="speed-control">Speed:</label>
+        <input type="range" id="speed-control" min="0.5" max="2" step="0.1" value="1">
+    </div>
+</div>
+
+<div id="viewer">
+    <img id="comic-img" src="custom_cover.jpg" alt="Comic Page">
+</div>
+
+<div id="text-overlay"></div>
+
+<script>
+    let ocrData = {};
+    let currentPage = 0;
+    let currentZoom = 1.0;
+    let isSpeaking = false;
+    let synth = window.speechSynthesis;
+    let utterance = null;
+
+    // Page list - starting with custom cover, then the rest
+    const pages = ["custom_cover.jpg"];
+    for(let i=2; i<=28; i++) {
+        let num = i.toString().padStart(3, '0');
+        pages.push(`Batman 001 (2025) ${num}.jpg`);
+    }
+
+    document.getElementById('total-pages').innerText = pages.length;
+
+    async function loadOCR() {
+        try {
+            const response = await fetch('ocr_data.json');
+            ocrData = await response.json();
+            // Map the custom cover to the first page's OCR text
+            ocrData["custom_cover.jpg"] = ocrData["Batman 001 (2025) 001.jpg"] || "Batman: Muhammad Usman";
+        } catch (e) {
+            console.error("Could not load OCR data", e);
+        }
+    }
+
+    function changePage(delta) {
+        stopTTS();
+        currentPage += delta;
+        if(currentPage < 0) currentPage = 0;
+        if(currentPage >= pages.length) currentPage = pages.length - 1;
+        
+        updateDisplay();
+    }
+
+    function updateDisplay() {
+        const img = document.getElementById('comic-img');
+        img.src = encodeURIComponent(pages[currentPage]);
+        document.getElementById('page-info').innerHTML = `Page ${currentPage + 1} / ${pages.length}`;
+        
+        document.getElementById('prev-btn').disabled = (currentPage === 0);
+        document.getElementById('next-btn').disabled = (currentPage === pages.length - 1);
+        
+        resetZoom();
+        document.getElementById('viewer').scrollTo(0,0);
+    }
+
+    function zoom(delta) {
+        currentZoom += delta;
+        if(currentZoom < 0.5) currentZoom = 0.5;
+        if(currentZoom > 3.0) currentZoom = 3.0;
+        document.getElementById('comic-img').style.transform = `scale(${currentZoom})`;
+    }
+
+    function resetZoom() {
+        currentZoom = 1.0;
+        document.getElementById('comic-img').style.transform = `scale(${currentZoom})`;
+    }
+
+    function toggleTTS() {
+        if (isSpeaking) {
+            stopTTS();
+        } else {
+            startTTS();
+        }
+    }
+
+    function startTTS() {
+        const text = ocrData[pages[currentPage]] || "No text detected on this page.";
+        if (!text) return;
+
+        stopTTS();
+        
+        utterance = new SpeechSynthesisUtterance(text);
+        
+        // Try to find a female voice
+        const voices = synth.getVoices();
+        const femaleVoice = voices.find(v => v.name.includes('Female') || v.name.includes('Google UK English Female') || v.name.includes('Microsoft Zira'));
+        if (femaleVoice) utterance.voice = femaleVoice;
+        
+        utterance.rate = document.getElementById('speed-control').value;
+        
+        utterance.onstart = () => {
+            isSpeaking = true;
+            document.getElementById('tts-btn').innerText = "⏹ Stop Reading";
+            document.getElementById('text-overlay').innerText = text;
+            document.getElementById('text-overlay').style.display = "block";
+        };
+        
+        utterance.onend = () => {
+            stopTTS();
+        };
+
+        synth.speak(utterance);
+    }
+
+    function stopTTS() {
+        synth.cancel();
+        isSpeaking = false;
+        document.getElementById('tts-btn').innerText = "🔊 Read Aloud";
+        document.getElementById('text-overlay').style.display = "none";
+    }
+
+    // Initialize
+    loadOCR();
+    updateDisplay();
+
+    // Keyboard navigation
+    document.addEventListener('keydown', (e) => {
+        if (e.key === "ArrowRight") changePage(1);
+        if (e.key === "ArrowLeft") changePage(-1);
+    });
+
+    // Handle voice list loading
+    window.speechSynthesis.onvoiceschanged = () => {
+        // Voices loaded
+    };
+</script>
+
+</body>
+</html>
